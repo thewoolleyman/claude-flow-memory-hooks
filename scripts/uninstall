@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# uninstall — Removes claude-flow-memory-hooks from a target Claude Code project.
+#
+# Usage: uninstall <path-to-project> [--dry-run] [--remove-gitignore] [-h|--help]
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+
+# ── Usage ──────────────────────────────────────────────────────────────────────
+
+usage() {
+  cat <<'EOF'
+Usage: uninstall <path-to-project> [--dry-run] [--remove-gitignore] [-h|--help]
+
+Removes claude-flow-memory-hooks from a target Claude Code project:
+  - Deletes the 4 hook scripts from <project>/.claude/hooks/
+  - Removes managed hook entries from <project>/.claude/settings.json
+  - Optionally removes .gitignore entries (with --remove-gitignore)
+
+Options:
+  --dry-run          Show what would be done without making changes
+  --remove-gitignore Also remove the gitignore marker block
+  -h, --help         Show this help message
+EOF
+}
+
+# ── Arg Parsing ────────────────────────────────────────────────────────────────
+
+TARGET=""
+DRY_RUN=false
+REMOVE_GITIGNORE=false
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help)          usage; exit 0 ;;
+    --dry-run)          DRY_RUN=true; shift ;;
+    --remove-gitignore) REMOVE_GITIGNORE=true; shift ;;
+    -*)                 log_error "Unknown option: $1"; usage >&2; exit 1 ;;
+    *)
+      if [ -z "$TARGET" ]; then
+        TARGET="$1"; shift
+      else
+        log_error "Unexpected argument: $1"; usage >&2; exit 1
+      fi
+      ;;
+  esac
+done
+
+if [ -z "$TARGET" ]; then
+  log_error "Missing required argument: <path-to-project>"
+  usage >&2
+  exit 1
+fi
+
+# Resolve to absolute path
+TARGET="$(cd "$TARGET" && pwd)"
+
+# ── Preflight ──────────────────────────────────────────────────────────────────
+
+check_dependencies
+
+if [ ! -d "$TARGET" ]; then
+  log_error "Target directory does not exist: $TARGET"
+  exit 1
+fi
+
+SETTINGS_FILE="$TARGET/.claude/settings.json"
+
+# ── Remove Hooks ──────────────────────────────────────────────────────────────
+
+remove_hooks() {
+  local dest="$TARGET/.claude/hooks"
+
+  for hook in "${HOOK_FILES[@]}"; do
+    local dst="$dest/$hook"
+    if [ ! -f "$dst" ]; then
+      log_info "Already absent: $hook"
+      continue
+    fi
+
+    if [ "$DRY_RUN" = true ]; then
+      log_dry_run "Would remove: $dst"
+    else
+      rm "$dst"
+      log_info "Removed: $hook"
+    fi
+  done
+}
+
+# ── Unmerge Settings JSON ─────────────────────────────────────────────────────
+
+unmerge_settings_json() {
+  if [ ! -f "$SETTINGS_FILE" ]; then
+    log_info "No settings.json to clean"
+    return 0
+  fi
+
+  if ! jq empty "$SETTINGS_FILE" 2>/dev/null; then
+    log_warn "settings.json is invalid JSON — skipping unmerge"
+    return 0
+  fi
+
+  if [ "$DRY_RUN" = true ]; then
+    log_dry_run "Would remove managed hook entries from: $SETTINGS_FILE"
+    return 0
+  fi
+
+  local tmpfile
+  tmpfile="$(mktemp)"
+  trap 'rm -f "$tmpfile"' RETURN
+
+  jq '
+    if .hooks then
+      .hooks |= with_entries(
+        .value |= map(select(.__managed_by != "claude-flow-memory-hooks"))
+      )
+    else
+      .
+    end
+  ' "$SETTINGS_FILE" > "$tmpfile"
+
+  if ! jq empty "$tmpfile" 2>/dev/null; then
+    log_error "Unmerge produced invalid JSON — settings.json left unchanged"
+    return 1
+  fi
+
+  cp "$tmpfile" "$SETTINGS_FILE"
+  log_info "Removed managed hook entries from settings.json"
+}
+
+# ── Remove Gitignore Entries ──────────────────────────────────────────────────
+
+remove_gitignore_entries() {
+  local gitignore="$TARGET/.gitignore"
+
+  if [ ! -f "$gitignore" ]; then
+    return 0
+  fi
+
+  if ! grep -q "$MARKER_BEGIN" "$gitignore"; then
+    log_info "No marker block in .gitignore"
+    return 0
+  fi
+
+  if [ "$DRY_RUN" = true ]; then
+    log_dry_run "Would remove marker block from: $gitignore"
+    return 0
+  fi
+
+  local tmpfile
+  tmpfile="$(mktemp)"
+  sed '/'"$MARKER_BEGIN"'/,/'"$MARKER_END"'/d' "$gitignore" > "$tmpfile"
+  cp "$tmpfile" "$gitignore"
+  rm -f "$tmpfile"
+  log_info "Removed marker block from .gitignore"
+}
+
+# ── Main ───────────────────────────────────────────────────────────────────────
+
+if [ "$DRY_RUN" = true ]; then
+  log_info "Dry run — no changes will be made"
+fi
+
+remove_hooks
+unmerge_settings_json
+
+if [ "$REMOVE_GITIGNORE" = true ]; then
+  remove_gitignore_entries
+else
+  log_info "Gitignore entries preserved (use --remove-gitignore to remove)"
+fi
+
+if [ "$DRY_RUN" = true ]; then
+  log_info "Dry run complete"
+else
+  log_info "Uninstall complete"
+fi

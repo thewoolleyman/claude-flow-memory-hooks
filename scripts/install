@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+# install — Installs claude-flow-memory-hooks into a target Claude Code project.
+#
+# Usage: install <path-to-project> [--dry-run] [-h|--help]
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+
+# ── Usage ──────────────────────────────────────────────────────────────────────
+
+usage() {
+  cat <<'EOF'
+Usage: install <path-to-project> [--dry-run] [-h|--help]
+
+Installs claude-flow-memory-hooks into a target Claude Code project:
+  - Copies 4 hook scripts to <project>/.claude/hooks/
+  - Merges hook entries into <project>/.claude/settings.json
+  - Adds runtime state paths to <project>/.gitignore
+
+Options:
+  --dry-run   Show what would be done without making changes
+  -h, --help  Show this help message
+
+Environment:
+  CLAUDE_FLOW_MEMORY_HOOKS_ROOT  Override auto-detected project root
+EOF
+}
+
+# ── Arg Parsing ────────────────────────────────────────────────────────────────
+
+TARGET=""
+DRY_RUN=false
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --dry-run)  DRY_RUN=true; shift ;;
+    -*)         log_error "Unknown option: $1"; usage >&2; exit 1 ;;
+    *)
+      if [ -z "$TARGET" ]; then
+        TARGET="$1"; shift
+      else
+        log_error "Unexpected argument: $1"; usage >&2; exit 1
+      fi
+      ;;
+  esac
+done
+
+if [ -z "$TARGET" ]; then
+  log_error "Missing required argument: <path-to-project>"
+  usage >&2
+  exit 1
+fi
+
+# ── Preflight ──────────────────────────────────────────────────────────────────
+
+check_dependencies
+
+# Validate before resolving (gives clean error for nonexistent paths)
+if [ ! -d "$TARGET" ]; then
+  log_error "Target directory does not exist: $TARGET"
+  exit 1
+fi
+
+# Resolve to absolute path
+TARGET="$(cd "$TARGET" && pwd)"
+
+validate_target_project "$TARGET"
+
+HOOKS_ROOT="$(get_project_root)"
+SETTINGS_FILE="$TARGET/.claude/settings.json"
+
+# ── Copy Hooks ─────────────────────────────────────────────────────────────────
+
+copy_hooks() {
+  local dest="$TARGET/.claude/hooks"
+
+  if [ "$DRY_RUN" = true ]; then
+    log_dry_run "Would create directory: $dest"
+  else
+    mkdir -p "$dest"
+  fi
+
+  for hook in "${HOOK_FILES[@]}"; do
+    local src="$HOOKS_ROOT/hooks/$hook"
+    local dst="$dest/$hook"
+
+    if [ ! -f "$src" ]; then
+      log_error "Source hook not found: $src"
+      return 1
+    fi
+
+    # Skip if identical (idempotent)
+    if [ -f "$dst" ] && cmp -s "$src" "$dst"; then
+      log_info "Unchanged: $hook"
+      continue
+    fi
+
+    if [ "$DRY_RUN" = true ]; then
+      log_dry_run "Would copy: $hook -> $dest/"
+    else
+      cp "$src" "$dst"
+      chmod +x "$dst"
+      log_info "Copied: $hook"
+    fi
+  done
+}
+
+# ── Merge Settings JSON ───────────────────────────────────────────────────────
+
+merge_settings_json() {
+  local settings="$SETTINGS_FILE"
+  local managed_hooks
+  managed_hooks="$(generate_hooks_json)"
+
+  if [ "$DRY_RUN" = true ]; then
+    log_dry_run "Would merge hook entries into: $settings"
+    return 0
+  fi
+
+  # Build jq filter: for each hook event type, remove existing managed entries
+  # then append new ones.
+  local tmpfile
+  tmpfile="$(mktemp)"
+  trap 'rm -f "$tmpfile"' RETURN
+
+  jq --argjson managed "$managed_hooks" '
+    .hooks //= {} |
+    reduce ($managed | keys[]) as $event (
+      .;
+      .hooks[$event] = (
+        ((.hooks[$event] // []) | map(select(.__managed_by != "claude-flow-memory-hooks")))
+        + $managed[$event]
+      )
+    )
+  ' "$settings" > "$tmpfile"
+
+  # Validate output is valid JSON before overwriting
+  if ! jq empty "$tmpfile" 2>/dev/null; then
+    log_error "Merge produced invalid JSON — settings.json left unchanged"
+    return 1
+  fi
+
+  cp "$tmpfile" "$settings"
+  log_info "Merged hook entries into settings.json"
+}
+
+# ── Update Gitignore ──────────────────────────────────────────────────────────
+
+update_gitignore() {
+  local gitignore="$TARGET/.gitignore"
+
+  if [ "$DRY_RUN" = true ]; then
+    log_dry_run "Would add marker block to: $gitignore"
+    return 0
+  fi
+
+  # Remove existing marker block if present (idempotent)
+  if [ -f "$gitignore" ]; then
+    local tmpfile
+    tmpfile="$(mktemp)"
+    sed '/'"$MARKER_BEGIN"'/,/'"$MARKER_END"'/d' "$gitignore" > "$tmpfile"
+    cp "$tmpfile" "$gitignore"
+    rm -f "$tmpfile"
+  fi
+
+  # Append marker block
+  {
+    # Ensure newline before marker if file exists and doesn't end with one
+    if [ -f "$gitignore" ] && [ -s "$gitignore" ]; then
+      tail -c1 "$gitignore" | read -r _ 2>/dev/null || printf '\n'
+    fi
+    printf '%s\n' "$MARKER_BEGIN"
+    for entry in "${GITIGNORE_ENTRIES[@]}"; do
+      printf '%s\n' "$entry"
+    done
+    printf '%s\n' "$MARKER_END"
+  } >> "$gitignore"
+
+  log_info "Updated .gitignore"
+}
+
+# ── Main ───────────────────────────────────────────────────────────────────────
+
+if [ "$DRY_RUN" = true ]; then
+  log_info "Dry run — no changes will be made"
+fi
+
+copy_hooks
+merge_settings_json
+update_gitignore
+
+if [ "$DRY_RUN" = true ]; then
+  log_info "Dry run complete"
+else
+  log_info "Install complete"
+fi
