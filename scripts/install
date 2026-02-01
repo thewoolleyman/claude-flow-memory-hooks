@@ -77,10 +77,12 @@ SETTINGS_FILE="$TARGET/.claude/settings.json"
 copy_hooks() {
   local dest="$TARGET/.claude/hooks"
 
-  if [ "$DRY_RUN" = true ]; then
-    log_dry_run "Would create directory: $dest"
-  else
-    mkdir -p "$dest"
+  if [ ! -d "$dest" ]; then
+    if [ "$DRY_RUN" = true ]; then
+      log_dry_run "Would create directory: $dest"
+    else
+      mkdir -p "$dest"
+    fi
   fi
 
   for hook in "${HOOK_FILES[@]}"; do

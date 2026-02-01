@@ -66,6 +66,21 @@ test_shows_planned_actions() {
 }
 run_test "dry-run shows planned actions" test_shows_planned_actions
 
+# ── Test: does not say "Would create" when hooks dir exists ────────────────────
+
+test_no_create_msg_when_dir_exists() {
+  local dir; dir="$(create_minimal_fixture)"
+  trap "teardown_fixture '$dir'" RETURN
+
+  mkdir -p "$dir/.claude/hooks"
+
+  local output
+  output="$(run_install "$dir" --dry-run 2>&1)"
+
+  assert_output_not_contains "$output" "Would create directory"
+}
+run_test "dry-run does not say 'Would create' when hooks dir exists" test_no_create_msg_when_dir_exists
+
 # ── Test: exit code 0 ─────────────────────────────────────────────────────────
 
 test_exit_code_zero() {
