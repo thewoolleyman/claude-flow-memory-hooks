@@ -136,6 +136,31 @@ test_idempotent() {
 }
 run_test "install is idempotent" test_idempotent
 
+# ── Test: deduplicates pre-existing hook-bridge entries ─────────────────────────
+
+test_deduplicates_preexisting() {
+  local dir; dir="$(create_fixture_with_claude_flow_init)"
+  trap "teardown_fixture '$dir'" RETURN
+
+  run_install "$dir" >/dev/null
+
+  local settings="$dir/.claude/settings.json"
+
+  # Each hook-bridge command should appear exactly once, not twice
+  local pre_edit_count
+  pre_edit_count="$(jq '[.hooks.PreToolUse[].hooks[] | select(.command == ".claude/hooks/hook-bridge.sh pre-edit")] | length' "$settings")"
+  assert_equals "1" "$pre_edit_count" "hook-bridge.sh pre-edit should appear once, not twice"
+
+  local route_count
+  route_count="$(jq '[.hooks.UserPromptSubmit[].hooks[] | select(.command == ".claude/hooks/hook-bridge.sh route")] | length' "$settings")"
+  assert_equals "1" "$route_count" "hook-bridge.sh route should appear once, not twice"
+
+  local stop_count
+  stop_count="$(jq '[.hooks.Stop[].hooks[] | select(.command | test("stop-check"))] | length' "$settings")"
+  assert_equals "1" "$stop_count" "stop-check should appear once, not twice"
+}
+run_test "deduplicates pre-existing hook-bridge entries" test_deduplicates_preexisting
+
 # ── Test: creates hooks directory ──────────────────────────────────────────────
 
 test_creates_hooks_dir() {

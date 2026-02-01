@@ -128,12 +128,24 @@ merge_settings_json() {
   tmpfile="$(mktemp)"
   trap 'rm -f "$tmpfile"' RETURN
 
-  jq --argjson managed "$managed_hooks" '
+  # Hook file basenames we manage — used to detect pre-existing entries
+  # from claude-flow init that duplicate what we're about to add.
+  local hook_patterns
+  hook_patterns="$(printf '%s\n' "${HOOK_FILES[@]}" | jq -R . | jq -s .)"
+
+  jq --argjson managed "$managed_hooks" --argjson hook_files "$hook_patterns" '
+    # Returns true if an entry references any of our hook files
+    def is_our_hook:
+      . as $entry |
+      ($entry.__managed_by == "claude-flow-memory-hooks") or
+      ([$entry.hooks[]?.command // ""] | any(. as $cmd |
+        $hook_files | any(. as $f | $cmd | test(".claude/hooks/" + $f))));
+
     .hooks //= {} |
     reduce ($managed | keys[]) as $event (
       .;
       .hooks[$event] = (
-        ((.hooks[$event] // []) | map(select(.__managed_by != "claude-flow-memory-hooks")))
+        ((.hooks[$event] // []) | map(select(is_our_hook | not)))
         + $managed[$event]
       )
     )

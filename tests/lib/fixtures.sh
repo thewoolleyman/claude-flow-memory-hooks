@@ -68,6 +68,72 @@ EOF
   printf '%s' "$dir"
 }
 
+# Creates a fixture simulating a claude-flow init project —
+# already has hook-bridge.sh entries without __managed_by markers.
+create_fixture_with_claude_flow_init() {
+  local dir
+  dir="$(mktemp -d "${FIXTURE_PREFIX}-XXXXXX")"
+  mkdir -p "$dir/.claude"
+  cat > "$dir/.claude/settings.json" <<'JSON'
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(Write|Edit|MultiEdit)$",
+        "hooks": [{"type": "command", "command": ".claude/hooks/hook-bridge.sh pre-edit", "timeout": 10000}]
+      },
+      {
+        "matcher": "^Bash$",
+        "hooks": [{"type": "command", "command": ".claude/hooks/hook-bridge.sh pre-command", "timeout": 10000}]
+      },
+      {
+        "matcher": "^Task$",
+        "hooks": [{"type": "command", "command": ".claude/hooks/hook-bridge.sh pre-task", "timeout": 10000}]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(Write|Edit|MultiEdit)$",
+        "hooks": [{"type": "command", "command": ".claude/hooks/hook-bridge.sh post-edit", "timeout": 10000}]
+      },
+      {
+        "matcher": "^Bash$",
+        "hooks": [{"type": "command", "command": ".claude/hooks/hook-bridge.sh post-command", "timeout": 10000}]
+      },
+      {
+        "matcher": "^Task$",
+        "hooks": [{"type": "command", "command": ".claude/hooks/hook-bridge.sh post-task", "timeout": 10000}]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [{"type": "command", "command": ".claude/hooks/hook-bridge.sh route", "timeout": 10000}]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {"type": "command", "command": ".claude/hooks/hook-bridge.sh daemon-start", "timeout": 10000},
+          {"type": "command", "command": ".claude/hooks/hook-bridge.sh session-restore", "timeout": 15000}
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [{"type": "command", "command": ".claude/hooks/hook-bridge.sh stop-check", "timeout": 1000}]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [{"type": "command", "command": ".claude/hooks/hook-bridge.sh notify", "timeout": 5000}]
+      }
+    ]
+  }
+}
+JSON
+  printf '%s' "$dir"
+}
+
 # Creates a fixture with invalid JSON in settings.json.
 create_fixture_with_invalid_json() {
   local dir
